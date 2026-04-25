@@ -259,3 +259,14 @@ Meta-lessons specifically for future revisions of this plugin:
 3. **Separate kickoff prompts for major vs minor revisions.** The Phase 1 kickoff for v1.0 was detailed and rigorous because nothing existed. For v1.1, the kickoff should be lighter — existing patterns to follow, existing docs to reference, scope constrained to the four items.
 
 4. **Spec revision with every major feature.** v1.0 had five spec revisions (v0.1 through v0.5) because the design evolved during development. For v1.1, aim to settle the spec before Phase 1 starts. If the spec evolves mid-development, that's a signal that something was under-thought.
+
+
+## LESSONS: extend credential rule to cover script location
+
+Credential-touching scratch scripts must run from outside the web
+docroot, not just respect presence-and-length output handling. Output
+hygiene without location hygiene leaves a window where a script
+reading credentials is web-accessible. First flagged during P0-A
+verification of aiplacement_aiagent (2026-04-24): groq_probe.php was
+placed in local/welcomeemail/ to read configured Groq provider config;
+output was correct, location was not. No leak occurred.
