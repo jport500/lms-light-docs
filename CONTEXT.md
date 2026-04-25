@@ -390,7 +390,7 @@ Read these before starting any new plugin work:
 When kicking off a new plugin conversation:
 
 1. Start the kickoff prompt with: "Read 
-   `github.com/jport500/lms-light-docs/blob/main/CONTEXT.md` and 
+   `github.com/jport500/lms-light-docs/CONTEXT.md` and 
    the LESSONS.md in the same repo before we begin."
 2. Follow with the plugin-specific section describing scope, 
    motivation, and constraints
