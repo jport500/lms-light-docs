@@ -201,6 +201,38 @@ AI-powered question generator for Moodle quiz activities.
 - All LMS Light sites configured with Groq as the AI provider for 
   text generation
 
+### mod_scorecard — LMS Light custom
+
+Scorecard activity module — operators define numeric-scale items 
+and qualitative bands; learners answer items, system scores 
+responses against bands to produce qualitative feedback ("strong 
+fit", "developing", etc.).
+
+- Repo: github.com/jport500/moodle-mod_scorecard
+- Current: v0.7.0 (April 2026); MATURITY_ALPHA pending 
+  earned-by-production-usage signal
+- Features: rich-text item prompts; soft-delete preservation for 
+  historical attempts; configurable scale + per-item anchor 
+  overrides; band-based qualitative scoring with snapshot 
+  fidelity (results stay stable across band edits); Moodle 
+  gradebook + activity-completion integration; full backup + 
+  restore (items, bands, attempts, responses with snapshot 
+  preservation); privacy provider; JSON template export and 
+  populate-existing import for distributing scorecard structure 
+  across courses and instances
+- ICP alignment: directly serves certification-readiness 
+  inventories, reflective self-assessment, and CE-relevant 
+  qualitative scoring workflows for niche training operators — 
+  the second named LMS Light ICP
+- Documentation: README.md, CHANGES.md, USER-GUIDE.md 
+  (operator/instructor reference at docs/USER-GUIDE.md), four 
+  phase retrospectives (Phases 4, 5a, 5b, 6) plus a renderer 
+  refactor retrospective in docs/, plus 
+  docs/MOODLE-TEMPLATING-CONVENTIONS.md (developer-facing 
+  conventions banked from refactor experience)
+- Architectural decisions: see SPEC.md (point-in-time design at 
+  v0.5) and the phase retrospectives in docs/
+
 ### CE tracking
 
 Continuing-education hour tracking for niche training operators 
