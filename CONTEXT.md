@@ -291,19 +291,24 @@ rhythm has caught in practice.
 
 ## Code quality gates (after every phase)
 
-- **phpcs --standard=moodle clean plugin-wide** — zero errors, 
-  zero warnings. Moodle's opinionated code standard catches style 
-  issues, documentation gaps, and some real bug classes. Fix at 
-  every phase boundary; never accumulate debt.
-- **PHPUnit full suite green** — all plugin tests pass, no 
+* **phpcs --standard=moodle clean plugin-wide** — zero errors,
+  zero warnings. Moodle's opinionated code standard catches
+  style issues, documentation gaps, and some real bug classes.
+  Fix at every phase boundary; never accumulate debt.
+* **PHPUnit full suite green** — all plugin tests pass, no
   regressions from the prior phase
-- **CLI smoke (where present)** — scripted end-to-end exercise of 
-  the pipeline
-- **Real-transport verification before release** — PHPUnit's 
-  in-memory mocking isn't sufficient for features with external 
-  I/O. Mailpit locally + real SMTP for email features; equivalent 
-  real-transport verification for webhooks, APIs, AI provider 
-  calls, etc.
+* **SPEC matches code** — for plugins maintained under
+  supervised agentic development, `docs/SPEC.md` reflects the
+  behavior of HEAD. Any iteration that changes behavior updates
+  the SPEC in the same commit. See "Living SPEC convention"
+  under Documentation conventions.
+* **CLI smoke (where present)** — scripted end-to-end exercise
+  of the pipeline
+* **Real-transport verification before release** — PHPUnit's
+  in-memory mocking isn't sufficient for features with external
+  I/O. Mailpit locally + real SMTP for email features;
+  equivalent real-transport verification for webhooks, APIs, AI
+  provider calls, etc.
 
 ---
 
@@ -381,21 +386,24 @@ configured provider for text generation.
 
 Every plugin has these documents:
 
-- `README.md` — what the plugin does, installation, configuration, 
-  operator guide, troubleshooting, roadmap
-- `CHANGES.md` — release notes, one entry per version, factual 
+* `README.md` — what the plugin does, installation,
+  configuration, operator guide, troubleshooting, roadmap
+* `CHANGES.md` — release notes, one entry per version, factual
   tone
-- `MANUAL_SMOKE.md` — if the plugin has user-facing behavior, a 
+* `MANUAL_SMOKE.md` — if the plugin has user-facing behavior, a
   walkthrough operators can run to verify shipped behavior
-- `docs/DECISIONS.md` — architectural decisions with rationale, 
+* `docs/DECISIONS.md` — architectural decisions with rationale,
   alternatives considered, "would revisit if" triggers
-- `docs/LESSONS.md` — process lessons and portable failure modes 
-  learned during development (can be deferred to v1.1 for 
+* `docs/LESSONS.md` — process lessons and portable failure modes
+  learned during development (can be deferred to v1.1 for
   brand-new plugins)
-- `docs/SPEC.md` — if applicable, point-in-time design document
+* `docs/SPEC.md` — **living** spec describing the plugin's
+  current behavior at HEAD. Mandatory for plugins maintained
+  under supervised agentic development. See "Living SPEC
+  convention" below.
 
-New plugins should establish these during v1.0 development, not 
-as an afterthought. Documents that live in the repo persist; 
+New plugins should establish these during v1.0 development, not
+as an afterthought. Documents that live in the repo persist;
 those that live only in conversation don't.
 
 ---
@@ -433,3 +441,43 @@ This context document is stable. When LMS Light's infrastructure,
 plugin ecosystem, or conventions change, update this document 
 once; every future plugin kickoff picks up the change 
 automatically.
+
+### Living SPEC convention
+
+For plugins maintained under supervised agentic development,
+`docs/SPEC.md` is the authoritative reference for what the
+plugin does. It is **living**, not point-in-time: every
+iteration that changes plugin behavior updates `docs/SPEC.md`
+in the same commit.
+
+The living SPEC has three jobs:
+
+1. **Tell an agent (or a human) what the plugin does today**,
+   without requiring them to reconstruct intent from code.
+2. **Anchor the propose-not-decide discipline.** The briefing
+   instruction "amend the SPEC before contradicting it" only
+   works if the SPEC lives in the same repo as the code, so
+   amending it is part of the same commit as the change.
+3. **Define acceptance criteria** that the agent can verify
+   against without further design questions.
+
+The convention has three documents at three altitudes for
+plugins that originated from a point-in-time design doc:
+
+| Document | Location | Job | Update cadence |
+|---|---|---|---|
+| Original design doc (e.g. `<plugin>-spec.md`) | `lms-light-docs` | Historical record of v1 intent | Frozen at v1; never updated |
+| `docs/SPEC.md` | plugin repo | Current behavior of HEAD | Updated with every behavior-changing commit |
+| `docs/DECISIONS.md` | plugin repo | Why each decision was made, with alternatives weighed | Appended to with each decision |
+
+The original design doc has historical value: it shows what was
+originally intended, what tradeoffs were made, what was
+deferred. It belongs in `lms-light-docs` permanently as a
+record. The living SPEC supersedes it as the day-to-day
+reference once the plugin exists.
+
+Plugins that didn't originate from a separate design doc still
+maintain `docs/SPEC.md` as the living spec; the historical-record
+row simply doesn't apply.
+
+
