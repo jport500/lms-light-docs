@@ -270,3 +270,112 @@ reading credentials is web-accessible. First flagged during P0-A
 verification of aiplacement_aiagent (2026-04-24): groq_probe.php was
 placed in local/welcomeemail/ to read configured Groq provider config;
 output was correct, location was not. No leak occurred.
+
+## `is_siteadmin()` and `has_capability('moodle/site:config', …)` are not equivalent
+
+Two Moodle APIs answer the question "is this user an administrator," and
+they answer it differently:
+
+- **`is_siteadmin($user)`** reads `$CFG->siteadmins` (a comma-separated
+  string of user IDs maintained through *Site administration → Users →
+  Permissions → Site administrators*) and returns true iff `$user` is in
+  that list.
+
+- **`has_capability('moodle/site:config', $context, $user)`** also returns
+  true for `$CFG->siteadmins` membership (Moodle short-circuits site admins
+  to true inside `has_capability`), **plus** returns true for any user
+  assigned a role at `$context` (or a parent context) that grants
+  `moodle/site:config`. The latter is the path `is_siteadmin()` does not
+  cover.
+
+**The pattern:** a security boundary that gates on "is this user an
+administrator?" using `is_siteadmin()` will be silently bypassed by an
+operator who creates a custom role granting `moodle/site:config` and
+assigns it at system context — a legitimate Moodle action with no
+security alarm bells, and one Moodle's own admin pages explicitly support.
+
+**The lesson:** for any boundary check whose semantics are "block users
+who can administer the site," use `has_capability('moodle/site:config',
+\context_system::instance(), $user)`. Reserve `is_siteadmin()` for cases
+where the literal `$CFG->siteadmins` list is the intended population
+(e.g., "show this prompt only to the named site admins, not to other
+admin-capable users").
+
+**Verification (PHPUnit):** the difference is testable end-to-end. Build
+a system-context role granting the capability, assign a user, and assert
+both APIs disagree:
+
+```php
+$context = \context_system::instance();
+$roleid = create_role('test_admin', 'test_admin', 'Test');
+assign_capability('moodle/site:config', CAP_ALLOW, $roleid, $context->id, true);
+role_assign($roleid, $user->id, $context->id);
+
+$this->assertTrue(has_capability('moodle/site:config', $context, $user));
+$this->assertFalse(is_siteadmin($user));
+```
+
+If your security check uses `is_siteadmin()` and that pair of asserts
+holds, the check is bypassable.
+
+**Discovered:** during `local_demoaccess` v0.1.0, building the Layer 4
+guard (refusing demo-account login for any user with `moodle/site:config`).
+The SPEC required the capability API explicitly; testing both code paths
+is what made the distinction concrete enough to bank as a lesson.
+
+---
+
+## PHPUnit 11 still accepts `@covers` PHPDoc; PHPUnit 12 will not
+
+Moodle 5.1 ships with PHPUnit 11.5. Test classes today use `@covers` in
+the class docblock to declare what they exercise, e.g.:
+
+```php
+/**
+ * @covers \local_welcomeemail\template\resolver
+ */
+final class resolver_test extends \advanced_testcase { … }
+```
+
+Running such a test under PHPUnit 11 with `--display-phpunit-deprecations`
+prints:
+
+> Metadata found in doc-comment for class …. Metadata in doc-comments is
+> deprecated and will no longer be supported in PHPUnit 12. Update your
+> test code to use attributes instead.
+
+PHPUnit 12 will drop the doc-comment form entirely. The replacement is
+the attribute form:
+
+```php
+use PHPUnit\Framework\Attributes\CoversClass;
+
+#[CoversClass(\local_welcomeemail\template\resolver::class)]
+final class resolver_test extends \advanced_testcase { … }
+```
+
+**The pattern:** every jport500 plugin's test suite uses `@covers` in
+PHPDoc. Each one will need migration before the Moodle release that
+bumps to PHPUnit 12.
+
+**The lesson:** treat this as a coordinated cross-plugin cleanup, not a
+per-plugin drive-by. Migrating one plugin's tests in isolation buys
+nothing — the deprecation is silent in PHPUnit 11, and the timing is
+forced by the Moodle PHPUnit bump, not by us. A single LESSONS entry
+across the plugin set lets us schedule one sweep at the right moment.
+
+**The trap:** the deprecation only surfaces with
+`--display-phpunit-deprecations`. Default `vendor/bin/phpunit` runs hide
+it under the "but there were issues!" line at the bottom. Watch for it
+when reviewing PHPUnit output during phase wrap-ups; it's easy to miss.
+
+**Plugins affected (verified 2026-05-08):** `local_welcomeemail`
+(`tests/resolver_test.php:33` and likely siblings), `local_demoaccess`
+(`tests/guard_test.php:33`). Other plugins in the jport500 set should be
+audited for `@covers` usage in the same sweep.
+
+**Discovered:** during `local_demoaccess` v0.1.0 PHPUnit run; same
+deprecation appears on identical convention in `local_welcomeemail`.
+Decision recorded in `local_demoaccess/docs/DECISIONS.md` to match
+existing convention rather than migrate solo.
+
