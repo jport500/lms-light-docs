@@ -379,3 +379,349 @@ deprecation appears on identical convention in `local_welcomeemail`.
 Decision recorded in `local_demoaccess/docs/DECISIONS.md` to match
 existing convention rather than migrate solo.
 
+---
+
+## Fail-open semantics require narrow exception catches
+
+Plugins that implement fault-tolerance — especially "if the cache is down, allow the request through" or "if the external service errors, return a default" — pair the tolerance with a `try { ... } catch (...) { fail open }` block. The instinct is to catch broadly: `catch (\Throwable $e)` or `catch (\Exception $e)`, on the reasoning that *any* unexpected error in the try block should be treated as a transient failure.
+
+That instinct is the bug.
+
+**Three layers can combine into silent breakage** when fail-open is paired with a broad catch:
+
+1. A defensive default in some configuration. (Example from `local_demoaccess` v0.4.0: `db/caches.php` declared `simplekeys => true`, the secure-by-default option.)
+2. The defensive default rejecting valid plugin behavior. (The rate limiter uses composite keys like `'ip:1.2.3.4'` containing colons, which the simple-key validator throws `coding_exception` on.)
+3. The broad catch swallowing the resulting *coding* error as if it were *infrastructure* failure. (`catch (\Throwable $e)` matched `coding_exception`; the fail-open path then unconditionally allowed every request.)
+
+Net result: the plugin would have shipped with rate limits silently disabled — passing all unit tests (every `assertNull` succeeded because every check returned `null` from the fail-open path), passing `phpcs` (the broad catch is syntactically valid), and failing only in production where there was no signal.
+
+In the local_demoaccess case the bug was caught because a diagnostic test was added during iteration to surface what the cache was actually doing. Without that diagnostic, the broken state would have been indistinguishable from the working state.
+
+**The pattern:** fail-open semantics live or die by their predictability. An operator reading the SPEC expects fail-open to trigger only on the specific failure mode the SPEC promises to handle. A broad catch turns *every new code path inside the try block* into a place where fail-open can silently activate — and worse, programmer errors stop being errors, they become silent traffic-let-through events.
+
+**The lesson:** anywhere fault-tolerance is paired with broad exception handling, the broad catch is the bug. Narrow the catch to the exact exception type that represents the failure mode you intend to handle. Coding errors, type errors, configuration mistakes, and unrelated exceptions must propagate normally — they're how you find out you have a bug.
+
+In the local_demoaccess case the fix was a one-line change:
+
+```php
+// Before — masks programmer errors as infrastructure failure:
+} catch (\Throwable $e) {
+    debugging('cache failed, failing open', DEBUG_DEVELOPER);
+    return null;
+}
+
+// After — only infrastructure-level cache failures fail open:
+} catch (\cache_exception $e) {
+    debugging('cache failed, failing open', DEBUG_DEVELOPER);
+    return null;
+}
+```
+
+**The discipline:** when writing or reviewing any `catch` block paired with fault-tolerant fallback, ask explicitly: *which exception types does the SPEC promise to handle by failing open? Catch only those.* If you cannot name the exception types, you do not have fail-open semantics — you have "swallow everything," which is never what you want.
+
+**Verification:** for every fail-open catch in a plugin, a test should exist that demonstrates the failure mode actually triggers the fail-open path (e.g. `local_demoaccess`'s `test_unavailable_cache_fails_open` builds a stub that throws `\cache_exception` specifically). Tests that pass through generic exceptions catch nothing useful — they prove "the catch is at least this broad," not "the catch handles the right thing."
+
+**See also:** *"Verify your narrowness assumptions; PHP's class hierarchy can betray you"* — extends this principle one step earlier, into how to verify a candidate narrow-catch is actually narrow.
+
+**Discovered:** during `local_demoaccess` v0.4.0, when the rate-limiter test suite reported "every limit returns null" and a diagnostic test surfaced the `coding_exception` being swallowed by the original `catch (\Throwable $e)`.
+
+**Generalizes to:** every plugin in the LMS Light set that catches exceptions for fault-tolerance — auth plugins gracefully degrading on external IdP outage, webhook handlers absorbing transient delivery failures, AI provider integrations falling back when the model is unreachable, scheduled-task wrappers that don't want to crash the runner. Each of these has a fail-open or fail-soft path; each must catch only the specific exception types that represent its intended failure mode.
+
+**Related security note:** the same principle applies in reverse for fail-closed paths. If the SPEC says "refuse on any auth failure," narrow the catch to the auth-specific exception types and let unrelated exceptions surface — otherwise an unrelated bug presenting as an exception silently produces a refusal, masking the bug.
+
+---
+
+## Verify your narrowness assumptions; PHP's class hierarchy can betray you
+
+> Direct extension of *"Fail-open semantics require narrow exception catches."* That entry establishes the principle: catch only the specific failure-mode exception, never `\Throwable`. This entry establishes how to verify that a candidate narrow-catch is actually narrow.
+
+A narrow-catch is only as narrow as the exception class's parent chain allows. PHP's class hierarchy — and Moodle's, layered on top of PHP's — can make a "narrow" catch silently broad if the class you intended to catch is itself a parent of unrelated classes you don't want to catch.
+
+**The trap** (caught at write-time during `local_demoaccess` v0.5.0):
+
+The SPEC proposed `catch (\moodle_exception | \dml_exception)` for the event-firing fail-open path. Surface reading: "catch infrastructure failures specifically." Actual reading, after grep:
+
+```
+$ grep -n "extends" lib/classes/exception/coding_exception.php lib/dmllib.php
+lib/classes/exception/coding_exception.php:28:class coding_exception extends moodle_exception {
+lib/dmllib.php:65:class dml_exception extends moodle_exception {
+```
+
+`\dml_exception extends \moodle_exception` — so the second clause of the union is redundant. Worse: `\coding_exception` *also* extends `\moodle_exception`. The "narrow" catch on `\moodle_exception` would have swallowed every coding error in the event-firing path, re-introducing the v0.4.0 trap one iteration later.
+
+The fix was a one-character-per-keyword change: `catch (\dml_exception)` only. The verification was a 30-second grep before the catch was written.
+
+**The pattern:** before writing a narrow catch, grep the inheritance chain of every exception class you intend to catch. Specifically:
+
+- Confirm the exception you want to catch is a leaf class (no unrelated subclasses).
+- Confirm no other exception class in the same library/framework extends from it for unrelated reasons.
+- If the intended class has children you don't want to catch, narrow further (catch a more specific class) or use a runtime check (`if ($e instanceof \unwanted_subclass) throw $e`).
+
+**The lesson:** banked principles ("narrow your catches") still require local verification. The v0.4.0 LESSONS entry told us to be narrow. v0.5.0's verification step ("but check what 'narrow' actually means in this hierarchy") is what made the principle reliable in a new context.
+
+**Verification:**
+
+```bash
+# Before writing `catch (\X)`, list X's children:
+grep -rn "extends X" lib/
+
+# And X's parent (to understand what catching X also catches):
+grep -A1 "class X" path/to/X.php | head -3
+```
+
+If the child list contains anything that represents a programmer error (`\coding_exception`, `\TypeError`, `\AssertionError`), narrow further.
+
+**Discovered:** `local_demoaccess` v0.5.0 implementation. The grep-before-write reflex (banked in the plugin's local LESSONS) caught it before any code shipped. The v0.4.0 banked principle plus the v0.5.0 verification step worked as intended together — the discipline preventing the same trap one iteration later.
+
+**Generalizes to:** every fault-tolerant catch in every Moodle plugin. The hierarchy of `\moodle_exception` (which `\dml_exception`, `\coding_exception`, `\file_exception`, `\cache_exception`, and others extend) is particularly worth knowing. The same trap shape exists in PHP-native classes (`\Error` is the parent of `\TypeError`, `\AssertionError`, etc.).
+
+**See also:** *"Fail-open semantics require narrow exception catches"* — the principle this entry verifies.
+
+---
+
+## Named Moodle constants defined in `lib/setuplib.php` are not available in `config.php`
+
+A small, expensive trap that the LMS Light plugin set will hit again: documenting `config.php` tweaks that reference Moodle's named debug constants produces a fatal error at the operator's first use, but passes every form of automated verification.
+
+**The trap** (surfaced during `local_demoaccess` v1.0 acceptance walkthrough, fixed in the same iteration):
+
+The SPEC, README, and MANUAL_SMOKE all said:
+
+```php
+// In config.php — the operator's edit:
+$CFG->debug = DEBUG_DEVELOPER;
+$CFG->local_demoaccess_dev_override = true;
+```
+
+This fatals on the first request:
+
+```
+Fatal error: Uncaught Error: Undefined constant "DEBUG_DEVELOPER"
+in /var/www/html/moodle/config.php:32
+```
+
+`DEBUG_DEVELOPER` is defined at `lib/setuplib.php:40`. `lib/setuplib.php` loads through `lib/setup.php`, which `config.php` requires at its end:
+
+```php
+// config.php structure:
+$CFG = new stdClass();
+// ... operator-edited values ...
+require_once(__DIR__ . '/lib/setup.php');  // <-- loads setuplib.php here
+```
+
+So the operator's `$CFG->debug = DEBUG_DEVELOPER;` reference runs *before* the constant is defined. PHP fatals on the undefined constant.
+
+**Why this trap is invisible to automated verification:**
+
+- Unit tests never touch `config.php` — Moodle's PHPUnit bootstrap runs `setup.php` first, so `DEBUG_DEVELOPER` is defined long before tests look at `$CFG->debug`.
+- `phpcs` reads PHP syntactically; an undefined constant at runtime is not a syntax error.
+- Real-HTTP smoke at every `local_demoaccess` iteration prior to v1.0 didn't catch it either, because none of those iterations deliberately exercised the dev-override-active-with-mismatched-allowlist path. The walkthrough step that exercises it is the only step that runs the operator's exact `config.php` edit.
+
+Across five iterations of design and review (v0.1.0 → v0.5.0), three documents (SPEC, README, MANUAL_SMOKE) all said the same wrong thing. None of the standard gates caught it. Only the v1.0 deliberate end-to-end walkthrough surfaced it.
+
+**The fix:** use PHP-native constants that *are* defined at parse time, in expressions that evaluate to the same numeric value Moodle's named constant resolves to:
+
+```php
+// In config.php — correct:
+$CFG->debug = (E_ALL | E_STRICT);  // = 32767, same value as DEBUG_DEVELOPER at runtime
+$CFG->local_demoaccess_dev_override = true;
+```
+
+`(E_ALL | E_STRICT)` is the canonical Moodle convention for this exact case. `E_ALL` and `E_STRICT` are PHP-native constants defined at parse time; the bitwise OR evaluates to 32767, identical to `DEBUG_DEVELOPER`'s runtime value.
+
+The plugin's runtime check (`(int) $CFG->debug === DEBUG_DEVELOPER`) is unaffected — that runs after `setup.php` has loaded, where `DEBUG_DEVELOPER` is defined.
+
+**The pattern:** any documentation that asks an operator to edit `config.php` must restrict itself to constants defined at parse time. PHP-native constants (`E_ALL`, `E_STRICT`, `M_PI`, etc.) are always available. Moodle constants are NOT available unless they live in a file loaded before `config.php` (a small set; the bulk of Moodle constants live in `setuplib.php` or later).
+
+**The lesson:** when documenting `config.php` tweaks, verify the example by running it. Don't trust your knowledge of which constants are "Moodle constants" vs "PHP constants" — the distinction matters at parse time and the boundary is not where you'd guess (Moodle defines a few constants in `config-dist.php`'s preamble; everything else is post-`setup.php`). The cost of the verification is one execution; the cost of skipping it is operators hitting a fatal at first use of the documented feature.
+
+**Verification:**
+
+```bash
+# Drop the documented config.php edit into a clean Moodle's config.php,
+# then run any CLI script that loads config.php. If the constant is
+# undefined at parse time, PHP fatals and the script halts immediately.
+ddev exec 'php /var/www/html/moodle/admin/cli/cfg.php 2>&1 | head -3'
+```
+
+If a documented operator edit is going to fatal, this script surfaces it in two seconds.
+
+**Constants commonly mistaken as parse-time-available** (all of these are post-`setup.php`):
+
+- `DEBUG_DEVELOPER`, `DEBUG_ALL`, `DEBUG_NORMAL`, `DEBUG_NONE`
+- `MUST_EXIST`, `IGNORE_MISSING`, `IGNORE_MULTIPLE`
+- `MOODLE_INTERNAL` (this one is actually defined slightly later in setup.php's flow)
+- `CONTEXT_SYSTEM`, `CONTEXT_COURSE`, etc.
+- `FORMAT_HTML`, `FORMAT_PLAIN`, etc.
+
+**Discovered:** `local_demoaccess` v1.0 acceptance-criteria walkthrough. Caught by deliberately running SPEC criterion 5 ("real-HTTP exercise of the dev override") end-to-end. The walkthrough specifically tested an operator's exact `config.php` edit; nothing else in the build sequence had.
+
+**Generalizes to:** every plugin in the LMS Light set that documents `config.php` tweaks. `auth_magiclink` may have similar exposure if it documents `$CFG->forced_plugin_settings` examples; future plugins that introduce their own `$CFG->*` flags will hit this if they document them with named Moodle constants.
+
+---
+
+## Match upstream test conventions; don't solve them solo
+
+When PHPUnit (CLI_SCRIPT) calls `complete_user_login()`, it warns: `session_regenerate_id(): Session ID cannot be regenerated when there is no active session`. The test passes (the warning isn't fatal), but PHPUnit reports it under "warnings" in the run summary.
+
+Two ways to handle this in plugin tests:
+
+**Match upstream:** prefix the call with `@` — Moodle's own tests already do this. See `public/lib/tests/task/send_login_notifications_test.php:45`:
+
+```php
+$SESSION->isnewsessioncookie = true;
+@complete_user_login($loginuser);
+```
+
+**Solve solo:** initialize an empty PHP session in the test before the call, e.g. `\core\session\manager::init_empty_session()`, so `session_regenerate_id()` has something to regenerate.
+
+The "solve solo" path looks cleaner — it suppresses the warning at the root cause rather than blanketing it. But it diverges from upstream: the moment Moodle changes how the session manager interacts with PHP sessions in tests (an entirely plausible 5.x → 6.0 detail), every plugin that hand-rolled `init_empty_session()` has its own forward-port problem to solve. The plugins that matched upstream's `@` get the fix for free with the next composer update.
+
+**The pattern:** when an upstream test convention exists for a known test-environment quirk — even one that looks like a hack — match it. The convention encodes context the plugin author doesn't have: *upstream knows where this quirk surfaces, has weighed alternatives, and will be the one to update it when the underlying API changes.*
+
+**The lesson:** "cleaner than upstream convention" is a trap. It inherits maintenance debt the plugin doesn't have to carry. Solo-fix only when (a) upstream convention is genuinely wrong (rare) or (b) no upstream convention exists for this case yet.
+
+**Verification:** before adding a workaround for a test-environment warning, grep the Moodle test corpus for the same warning text or the same root function call:
+
+```
+grep -rn "@complete_user_login\|session_regenerate_id" \
+  public/lib/tests/ public/lib/classes/
+```
+
+If upstream is already handling it, copy their handling. If they aren't, you may have found something genuinely new — and at that point a Moodle Tracker issue is the better contribution than a plugin-local workaround.
+
+**Discovered:** surfaced during `local_demoaccess` v0.2.0 implementation; banked as a LESSONS candidate at review time rather than recorded as a DECISIONS entry, since the conclusion (match upstream) is portable engineering knowledge rather than plugin-specific architecture.
+
+**Generalizes to:** any test-environment-specific quirk where Moodle core's own tests have established a workaround. The same logic applies to Mailpit-vs-mocked-SMTP setup, MUC-cache initialization in tests, event-redirect handling, and any future test-environment surface that behaves differently from production.
+
+---
+
+## `admin_setting_*` base classes are not auto-loaded for PHPUnit
+
+Plugins extending Moodle's admin settings widgets (for example, custom subclasses of `admin_setting_configtext`, `admin_setting_configcheckbox`, or `admin_setting_heading`) hit a class-resolution failure the moment a unit test instantiates them:
+
+```
+Error: Class "admin_setting_configtext" not found
+```
+
+These base classes live in `lib/adminlib.php` rather than under `lib/classes/`. Moodle loads `adminlib.php` only when the admin tree is being rendered — request-time only. The PHPUnit bootstrap does not load it. So a test that does `new my_validating_setting(...)` fails on class resolution before any assertion runs, even though the file exists, the autoloader is correct, and PHPCS is clean.
+
+**The pattern:** any plugin test file that touches an `admin_setting` subclass needs to explicitly require `adminlib.php` at the top:
+
+```php
+namespace my_plugin\admin;
+
+defined('MOODLE_INTERNAL') || die();
+
+global $CFG;
+require_once($CFG->libdir . '/adminlib.php');
+```
+
+The require_once is on the test file, not on the class file under `classes/admin/`. The class file only needs the parent class to be loaded *at instantiation time*; production code path always renders through `settings.php` which lives behind `$hassiteconfig` (which means adminlib.php has loaded). The test path is the only one where the load order is wrong.
+
+**The lesson:** "PHPUnit bootstrap loads what request-time loads" is false. Anything that lives in `lib/<file>.php` outside the autoloader's classes/ tree must be manually required by the test. `adminlib.php` is the most common offender; `weblib.php` (some helper functions), `enrollib.php`, and `gradelib.php` have similar exposure.
+
+**Verification:** before adding any test for an admin_setting subclass, add the require_once at the top of the test file. Cheaper than diagnosing the misleading "Class … not found" error after the fact.
+
+**Discovered:** during `local_demoaccess` v0.3.0, when the new `tests/admin/*_test.php` files all failed with admin_setting_* not found. Fixed in three places by adding `require_once($CFG->libdir . '/adminlib.php');` at the top of each test file.
+
+**Generalizes to:** every plugin in the LMS Light set that ships custom admin-settings widgets. None do today; future plugins built on the same pattern will hit this on first PHPUnit run.
+
+---
+
+## `resetAfterTest()` does not reset custom `$CFG->...` properties
+
+Moodle's `advanced_testcase::resetAfterTest()` resets the database, the moodledata directory, MUC caches, and `$CFG` keys it knows about (those backed by the `config` and `config_plugins` tables, plus the bootstrap defaults). It does **not** unset arbitrary properties added to the `$CFG` global at runtime.
+
+Plugins that read feature toggles or dev-override flags from `$CFG->some_custom_property` will see these properties leak across tests:
+
+```php
+public function test_a(): void {
+    $this->resetAfterTest();
+    $CFG->local_demoaccess_dev_override = true;
+    // ... assertions ...
+}
+
+public function test_b(): void {
+    $this->resetAfterTest();
+    // $CFG->local_demoaccess_dev_override is STILL true here.
+    // assertion expecting "no override active" fails surprisingly.
+}
+```
+
+Symptoms: tests pass when run individually (`--filter test_b`) but fail in the full suite. Errors look like state-dependent assertions ("expected X, got Y") with no obvious cause in the test under inspection.
+
+**The pattern:** plugins using `$CFG` for plugin-specific runtime flags must reset those properties explicitly in `setUp()`:
+
+```php
+protected function setUp(): void {
+    parent::setUp();
+    global $CFG;
+    unset($CFG->my_plugin_dev_override);
+}
+```
+
+Reset before each test, not after. resetAfterTest() owns the after.
+
+**The lesson:** the test framework is not omniscient about plugin-specific `$CFG` extensions. The plugin owns its own config surface and must own its own test isolation for that surface. If a custom property appears in a plugin's runtime code, a corresponding `unset()` belongs in the plugin's test setUp.
+
+**Worth noting about `$CFG->debug`:** this one IS a Moodle-known property, but `resetAfterTest()` doesn't reset it because PHPUnit's default debug level is set during bootstrap and persists. Tests that mutate `$CFG->debug` (typically to `DEBUG_DEVELOPER` to exercise debug-conditional code) need to reset it manually.
+
+**Verification:** for any test that writes to `$CFG->...` for a plugin-specific or debug-related property, write a corresponding unset/reset in setUp the same hour. Cheaper than diagnosing intermittent test failures driven by run order.
+
+**Discovered:** during `local_demoaccess` v0.3.0, when the new dashboard tests would pass individually but fail in the full suite because `$CFG->local_demoaccess_dev_override` and `$CFG->debug` were leaking from `guard_test`'s dev-override test cases. Fixed by adding `setUp()` to both `guard_test.php` and `safety_dashboard_setting_test.php`.
+
+**Generalizes to:** every plugin that uses `$CFG->...` for configuration outside the `config_plugins` table — feature flags, dev overrides, environment-specific flags injected from `config.php`, anything `is_*_enabled()` predicates hard-code against `$CFG`.
+
+---
+
+## Anonymous-class test stubs need explicit per-method docblocks
+
+PHPUnit-friendly test stubs are sometimes built as anonymous classes extending a Moodle base class:
+
+```php
+$brokencache = new class extends \cache_application {
+    public function __construct() { /* skip parent */ }
+    public function get($key, $strictness = ...) { throw new \cache_exception(...); }
+    public function set($key, $data) { throw new \cache_exception(...); }
+};
+```
+
+Moodle's phpcs ruleset requires per-method docblocks even on anonymous classes. `phpcs:disable Squiz.Commenting.FunctionComment` directives inside the anonymous class do not appear to be honored — phpcs still flags `Missing docblock for function get in testcase`. The fix is to write actual docblocks:
+
+```php
+$brokencache = new class extends \cache_application {
+    /** Skip parent constructor: avoids instantiating a real MUC backend. */
+    public function __construct() {}
+
+    /**
+     * Throws to simulate a broken MUC store.
+     *
+     * @param string|int $key Cache key (unused).
+     * @param int $strictness Cache strictness (unused).
+     * @return mixed Never returns; always throws.
+     */
+    public function get($key, $strictness = \cache_store::DEREFERENCES_OBJECTS) {
+        throw new \cache_exception('simulated cache failure');
+    }
+
+    /**
+     * Throws to simulate a broken MUC store.
+     *
+     * @param string|int $key Cache key (unused).
+     * @param mixed $data Cache data (unused).
+     * @return bool Never returns; always throws.
+     */
+    public function set($key, $data) {
+        throw new \cache_exception('simulated cache failure');
+    }
+};
+```
+
+**The pattern:** Moodle CS treats anonymous-class methods like any other method — full docblock with one-line description, `@param`s, `@return`. `phpcs:disable` annotations don't help here.
+
+**The lesson:** when building anonymous class stubs for tests, plan for docblocks from the start. Three short docblocks for a test stub take 30 seconds to write and one minute to debug if you skip them.
+
+**Discovered:** during `local_demoaccess` v0.4.0, while writing the `test_unavailable_cache_fails_open` test (anonymous `\cache_application` subclass throwing on `get`/`set`).
+
+**Generalizes to:** every plugin that uses anonymous classes as test fixtures — particularly plugins testing fault-tolerance against cache backends, repository interfaces, observer dispatchers, and other abstract Moodle infrastructure surfaces.
