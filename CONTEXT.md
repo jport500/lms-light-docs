@@ -189,6 +189,53 @@ custom progress-tracking sidebar.
 - Supports Moodle 5.0+ in both pre-`/public` and post-`/public` 
   directory layouts
 
+### Knowledge Check suite — LMS Light custom
+
+Three-plugin suite delivering short, embeddable comprehension
+checks for formative assessment inside course content.
+Authors drop 3–5 multiple-choice or true/false questions into
+narrative content (Pages, Labels, section summaries) via a
+single filter token; learners answer inline without leaving
+the page they're reading.
+
+- **mod_knowledgecheck** — activity module, question pinning,
+  attempt/grade lifecycle, teacher report, backup/restore,
+  privacy provider. Repo:
+  github.com/jport500/moodle-mod_knowledgecheck. Current:
+  v1.0.1 (May 2026).
+- **filter_knowledgecheck** — text filter that recognises
+  `{knowledgecheck id=<uuid>}` tokens and renders the
+  embedded view. Repo:
+  github.com/jport500/moodle-filter_knowledgecheck. Current:
+  v1.0.0.
+- **tiny_knowledgecheck** — TinyMCE 7 picker plugin that
+  inserts embed tokens at the cursor. Repo:
+  github.com/jport500/moodle-tiny_knowledgecheck. Current:
+  v1.0.0.
+
+Design philosophy: formative, not summative. Knowledge Check
+is positioned as comprehension verification ("did you absorb
+this section") rather than assessment ("submit your answers
+for grading"). Best-attempt grading, unlimited retakes,
+per-question feedback ladder, "Check my answers" call to
+action.
+
+Recommended authoring workflow: place activities in the same
+section as the consuming content, then use Moodle's
+"Available but not shown on course page" stealth-activity
+setting so the activity is reachable for embeds but doesn't
+clutter the course outline. Requires `$CFG->allowstealth = 1`
+(set as LMS Light tenant default) and per-course "Allow
+stealth activities" enabled.
+
+Theme integration via CSS custom properties (`--kc-*`) so
+per-tenant themes can override visual treatment without
+plugin modification.
+
+Architectural decisions: see `docs/DECISIONS.md` in
+moodle-mod_knowledgecheck (22 ADRs). Process lessons:
+`docs/LESSONS.md` in the same repo.
+
 ### local_quizgenpro — LMS Light custom
 
 AI-powered question generator for Moodle quiz activities.
