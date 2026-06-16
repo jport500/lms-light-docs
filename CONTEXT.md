@@ -48,12 +48,17 @@ branding, and custom plugins tailored to our ICPs.
 * **Niche training operators** — specialized training businesses,
   especially those requiring certification and continuing-education
   (CE) hour tracking
+* **Associations** — professional and membership bodies delivering
+  member education and certification, often with CE hour
+  requirements
+* **Non-profits** — mission-driven organizations delivering training
+  to staff, volunteers, or the communities they serve
 
 Feature priorities flow from these ICPs. A feature that only
 benefits large universities or K-12 schools is probably not aligned
 with LMS Light's focus. A feature that benefits certification
-workflows, customer-facing training deployments, or multi-tenant
-operator efficiency is probably in scope.
+workflows, customer-facing training deployments, member or volunteer
+education, or multi-tenant operator efficiency is probably in scope.
 
 ### Status
 
@@ -90,7 +95,10 @@ multi-tenancy.
 
 ## Moodle platform
 
-* **Moodle 5.1** (plugins target `requires = 2024040100`)
+* **Moodle 5.2.1** (Build: 20260608)
+* **Deployment codebase:** sites are deployed from
+  `github.com/mutms/mutms` (the MuTMS distribution: core Moodle +
+  plugins assembled via git subtrees)
 * **Docroot pattern:** `public/` subdirectory (Moodle's post-4.x
   pattern where code lives in `public/`)
 * **Dev environment:** DDEV on macOS
